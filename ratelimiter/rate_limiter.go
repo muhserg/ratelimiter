@@ -46,7 +46,8 @@ func LimitTasks(wg *sync.WaitGroup, chanTask chan string) {
 		}
 
 		if calcExecTask(chanResultTaskEnd, &beginTasks, &endTasks, &tasksInMinute, &start) {
-			go taskChanExec(chanResultTaskEnd, task)
+			wg.Add(1)
+			go taskChanExec(wg, chanResultTaskEnd, task)
 			beginTasks++
 			tasksInMinute++
 		}
@@ -56,12 +57,13 @@ func LimitTasks(wg *sync.WaitGroup, chanTask chan string) {
 }
 
 //Запуск конкретной задачи с уведомлением о завершении
-func taskChanExec(chanResultTaskEnd chan string, task string) {
-	//на всякий случай - из-за возможной записи в уже закрытый канал chanResultTaskEnd
+func taskChanExec(wg *sync.WaitGroup, chanResultTaskEnd chan string, task string) {
 	defer func() {
-		if r := recover(); r != nil {
+		if r := recover(); r != nil { //на всякий случай - из-за возможной записи в уже закрытый канал chanResultTaskEnd
+			wg.Done()
 			return
 		}
+		wg.Done()
 	}()
 
 	err := taskExec(task)
