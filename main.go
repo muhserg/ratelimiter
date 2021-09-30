@@ -5,5 +5,5 @@ import (
 )
 
 func main() {
-	fmt.Println("Создано для удобной компиляции в Goland")
+	fmt.Println("Создано для удобной компиляции в Goland.")
 }
