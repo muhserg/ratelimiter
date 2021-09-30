@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/astaxie/beego/logs"
+	"sync"
 	"time"
 )
 
@@ -15,8 +16,8 @@ type Task struct {
 	Text string
 }
 
-const BEGIN_TASK = "begin"
 const END_TASK = "end"
+const CHECK_RETRY_TIMEOUT = 100
 
 //Настройка ограничений
 func init() {
@@ -26,77 +27,104 @@ func init() {
 }
 
 //Запуск задач в соответствии с ограничениями
-func LimitTasks(chanTask chan string) {
-	chanResultTaskBegin := make(chan string)
-	chanResultTaskEnd := make(chan string)
-	//defer close(chanTask)
+func LimitTasks(wg *sync.WaitGroup, chanTask chan string) {
+	defer wg.Done()
+
+	chanResultTaskEnd := make(chan string, config["maxSimultaneouslyTask"])
+	defer close(chanResultTaskEnd)
 
 	var beginTasks int
 	var endTasks int
-	var quantitySend int
 	for {
 		task, ok := <-chanTask
 		if !ok {
 			break
 		}
 
-		if quantitySend == 0 {
-			go taskExec(chanResultTaskBegin, chanResultTaskEnd, task)
-		} else if calcExecTask(chanResultTaskBegin, chanResultTaskEnd, &beginTasks, &endTasks) {
-			logs.Debug("Send task", task)
-			go taskExec(chanResultTaskBegin, chanResultTaskEnd, task)
+		if calcExecTask(chanResultTaskEnd, &beginTasks, &endTasks) {
+			//logs.Debug("Send task", task)
+			go taskChanExec(chanResultTaskEnd, task)
+			beginTasks++
 		}
-		quantitySend++
 	}
+
+	fmt.Println("Задачи отправлены параллельно")
 }
 
-//Запуск конкретной задачи
-func taskExec(chanResultTaskBegin, chanResultTaskEnd chan string, task string) {
-	chanResultTaskBegin <- BEGIN_TASK
-	//logs.Debug("Exec task", task)
+//Запуск конкретной задачи  уведомлением о завершении
+func taskChanExec(chanResultTaskEnd chan string, task string) {
 
-	var taskObj Task
-	err := json.Unmarshal([]byte(task), &taskObj)
+
+	err := taskExec(task)
 	if err != nil {
 		logs.Error(err)
 		chanResultTaskEnd <- END_TASK
-		return
 	}
-
-	fmt.Println("В задаче '" + taskObj.Name + "' нужно сделать следующее: " + taskObj.Text)
-	time.Sleep(4 * time.Second)
 
 	chanResultTaskEnd <- END_TASK
 }
 
-//Получает сообщения о выполнении задач из канала
-func getTaskResultMess(chanResultTaskBegin, chanResultTaskEnd chan string, beginTasks, endTasks *int) bool {
-	ok := false
-
-	select {
-		case _, ok = <-chanResultTaskBegin:
-			*beginTasks++
-		case _, ok = <-chanResultTaskEnd:
-			*endTasks++
+//Запуск конкретной задачи
+func taskExec(task string) error {
+	var taskObj Task
+	err := json.Unmarshal([]byte(task), &taskObj)
+	if err != nil {
+		return err
 	}
 
-	return ok
+	fmt.Println("В задаче '" + taskObj.Name + "' нужно сделать следующее: " + taskObj.Text)
+	time.Sleep(3 * time.Second)
+
+	return nil
+}
+
+//Получает сообщения о выполнении задач из канала
+func getTaskResultMess(chanResultTaskEnd chan string, endTasks *int) bool {
+	select {
+	case _, ok := <-chanResultTaskEnd:
+		if !ok {
+			return false
+		}
+		*endTasks++
+	default:
+	}
+
+	return true
+}
+
+//очищаем канал от сообщений END_TASK
+func clearTaskResultMess(chanResultTaskEnd chan string) {
+	answer := "ready"
+	for  {
+		select {
+		case _, ok := <-chanResultTaskEnd:
+			if !ok {
+				return
+			}
+		default:
+			answer = "empty"
+		}
+
+		if answer == "empty" {
+			break
+		}
+	}
 }
 
 //Вычисляет число запущенных задач и выдает сигнал запускать новые задачи
-func calcExecTask(chanResultTaskBegin, chanResultTaskEnd chan string, beginTasks, endTasks *int) bool {
+func calcExecTask(chanResultTaskEnd chan string, beginTasks, endTasks *int) bool {
 	for {
-		chanOpen := getTaskResultMess(chanResultTaskBegin, chanResultTaskEnd, beginTasks, endTasks)
+		chanOpen := getTaskResultMess(chanResultTaskEnd, endTasks)
 		if !chanOpen {
-			logs.Error(errors.New("Канал результатов задач преждевременно закрылся."))
+			logs.Error(errors.New("Один из двух каналов результатов задач преждевременно закрылся."))
 			break
 		}
-		logs.Debug("beginTasks: ", *beginTasks, ", endTasks: ", *endTasks)
 
+		//logs.Debug("beginTasks: ", *beginTasks, ", endTasks: ", *endTasks)
 		if *beginTasks-*endTasks < config["maxSimultaneouslyTask"] {
 			return true
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(CHECK_RETRY_TIMEOUT * time.Millisecond)
 	}
 
 	return false
