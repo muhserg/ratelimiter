@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/astaxie/beego/logs"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -23,7 +24,7 @@ const CHECK_RETRY_TIMEOUT = 100
 func init() {
 	config = make(map[string]int)
 	config["maxSimultaneouslyTask"] = 5
-	config["maxTaskInMinute"] = 10
+	config["maxTaskInMinute"] = 40
 }
 
 //Запуск задач в соответствии с ограничениями
@@ -35,25 +36,33 @@ func LimitTasks(wg *sync.WaitGroup, chanTask chan string) {
 
 	var beginTasks int
 	var endTasks int
+	var tasksInMinute int
+	start := time.Now()
+
 	for {
 		task, ok := <-chanTask
 		if !ok {
 			break
 		}
 
-		if calcExecTask(chanResultTaskEnd, &beginTasks, &endTasks) {
-			//logs.Debug("Send task", task)
+		if calcExecTask(chanResultTaskEnd, &beginTasks, &endTasks, &tasksInMinute, &start) {
 			go taskChanExec(chanResultTaskEnd, task)
 			beginTasks++
+			tasksInMinute++
 		}
 	}
 
 	fmt.Println("Задачи отправлены параллельно")
 }
 
-//Запуск конкретной задачи  уведомлением о завершении
+//Запуск конкретной задачи с уведомлением о завершении
 func taskChanExec(chanResultTaskEnd chan string, task string) {
-
+	//на всякий случай - из-за возможной записи в уже закрытый канал chanResultTaskEnd
+	defer func() {
+		if r := recover(); r != nil {
+			return
+		}
+	}()
 
 	err := taskExec(task)
 	if err != nil {
@@ -92,27 +101,8 @@ func getTaskResultMess(chanResultTaskEnd chan string, endTasks *int) bool {
 	return true
 }
 
-//очищаем канал от сообщений END_TASK
-func clearTaskResultMess(chanResultTaskEnd chan string) {
-	answer := "ready"
-	for  {
-		select {
-		case _, ok := <-chanResultTaskEnd:
-			if !ok {
-				return
-			}
-		default:
-			answer = "empty"
-		}
-
-		if answer == "empty" {
-			break
-		}
-	}
-}
-
 //Вычисляет число запущенных задач и выдает сигнал запускать новые задачи
-func calcExecTask(chanResultTaskEnd chan string, beginTasks, endTasks *int) bool {
+func calcExecTask(chanResultTaskEnd chan string, beginTasks, endTasks, tasksInMinute *int, start *time.Time) bool {
 	for {
 		chanOpen := getTaskResultMess(chanResultTaskEnd, endTasks)
 		if !chanOpen {
@@ -120,7 +110,16 @@ func calcExecTask(chanResultTaskEnd chan string, beginTasks, endTasks *int) bool
 			break
 		}
 
-		//logs.Debug("beginTasks: ", *beginTasks, ", endTasks: ", *endTasks)
+		diff := time.Minute - time.Since(*start)
+		if diff < 0 { //когда задачи выполняются медленно
+			*tasksInMinute = 0
+		} else if *tasksInMinute == config["maxTaskInMinute"] { //когда задачи выполняются быстро
+				*tasksInMinute = 0
+				fmt.Println("Wait " + strconv.FormatFloat(diff.Seconds(), 'f', 2, 64) + " seconds...")
+				time.Sleep(diff)
+				*start = time.Now()
+		}
+
 		if *beginTasks-*endTasks < config["maxSimultaneouslyTask"] {
 			return true
 		}

@@ -1,5 +1,4 @@
 # ratelimiter
-ratelimiter
 
 Текст задания
 
