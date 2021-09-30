@@ -12,14 +12,14 @@ import (
 
 func TestRateLimiter(t *testing.T) {
 
-	chanTask := make(chan string, 10)
+	chanTask := make(chan string)
 	defer close(chanTask)
 
 	go ratelimiter.LimitTasks(chanTask)
 
 	//отправка задач
-	for i := 0; i < 1000; i++ {
-		task := `{"name":"Задача #` + strconv.Itoa(i+1) + `","text":"Сделать задачу"}`
+	for i := 0; i < 10; i++ {
+		task := `{"name": "Задача #` + strconv.Itoa(i+1) + `", "text": "Сделать задачу"}`
 		chanTask <- task
 	}
 
