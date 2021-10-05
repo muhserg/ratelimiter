@@ -17,3 +17,6 @@
 
 cd tests
 go test -v -run RateLimiter
+
+проверка на гонку данных
+go test -race -run RateLimiter

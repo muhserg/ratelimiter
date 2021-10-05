@@ -1,7 +1,9 @@
 package tests
 
 //запуск тестов:
-//go test -v -run RateLimiter
+//cd tests
+//go test -run RateLimiter
+//go test -race -run RateLimiter
 
 import (
 	"fmt"

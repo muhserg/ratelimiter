@@ -17,8 +17,8 @@ type Task struct {
 	Text string
 }
 
-const END_TASK = "end"
-const CHECK_RETRY_TIMEOUT = 100
+const END_TASK string = "end"
+const CHECK_RETRY_TIMEOUT time.Duration = 100
 
 //Настройка ограничений
 func init() {
@@ -28,16 +28,15 @@ func init() {
 }
 
 //Запуск задач в соответствии с ограничениями
-func LimitTasks(wg *sync.WaitGroup, chanTask chan string) {
+func LimitTasks(wg *sync.WaitGroup, chanTask <-chan string) {
 	defer wg.Done()
 
 	chanResultTaskEnd := make(chan string, config["maxSimultaneouslyTask"])
 	defer close(chanResultTaskEnd)
 
-	var beginTasks int
-	var endTasks int
-	var tasksInMinute int
+	var beginTasks, endTasks, tasksInMinute int
 	start := time.Now()
+	var mutex sync.Mutex
 
 	for {
 		task, ok := <-chanTask
@@ -46,8 +45,7 @@ func LimitTasks(wg *sync.WaitGroup, chanTask chan string) {
 		}
 
 		if calcExecTask(chanResultTaskEnd, &beginTasks, &endTasks, &tasksInMinute, &start) {
-			wg.Add(1)
-			go taskChanExec(wg, chanResultTaskEnd, task)
+			go taskChanExec(chanResultTaskEnd, task, &mutex)
 			beginTasks++
 			tasksInMinute++
 		}
@@ -56,23 +54,17 @@ func LimitTasks(wg *sync.WaitGroup, chanTask chan string) {
 	fmt.Println("Задачи отправлены параллельно")
 }
 
-//Запуск конкретной задачи с уведомлением о завершении
-func taskChanExec(wg *sync.WaitGroup, chanResultTaskEnd chan string, task string) {
-	defer func() {
-		if r := recover(); r != nil { //на всякий случай - из-за возможной записи в уже закрытый канал chanResultTaskEnd
-			wg.Done()
-			return
-		}
-		wg.Done()
-	}()
+//Запуск конкретной задачи с уведомлением о завершении (chanResultTaskEnd только для записи)
+func taskChanExec(chanResultTaskEnd chan<- string, task string, mutex *sync.Mutex) {
 
 	err := taskExec(task)
 	if err != nil {
 		logs.Error(err)
-		chanResultTaskEnd <- END_TASK
 	}
 
+	mutex.Lock()
 	chanResultTaskEnd <- END_TASK
+	mutex.Unlock()
 }
 
 //Запуск конкретной задачи
@@ -83,14 +75,14 @@ func taskExec(task string) error {
 		return err
 	}
 
-	fmt.Println("В задаче '" + taskObj.Name + "' нужно сделать следующее: " + taskObj.Text)
+	fmt.Printf("В задаче '%s' нужно сделать следующее: %s\n", taskObj.Name, taskObj.Text)
 	time.Sleep(3 * time.Second)
 
 	return nil
 }
 
 //Получает сообщения о выполнении задач из канала
-func getTaskResultMess(chanResultTaskEnd chan string, endTasks *int) bool {
+func getTaskResultMess(chanResultTaskEnd <-chan string, endTasks *int) bool {
 	select {
 	case _, ok := <-chanResultTaskEnd:
 		if !ok {
@@ -104,11 +96,11 @@ func getTaskResultMess(chanResultTaskEnd chan string, endTasks *int) bool {
 }
 
 //Вычисляет число запущенных задач и выдает сигнал запускать новые задачи
-func calcExecTask(chanResultTaskEnd chan string, beginTasks, endTasks, tasksInMinute *int, start *time.Time) bool {
+func calcExecTask(chanResultTaskEnd <-chan string, beginTasks, endTasks, tasksInMinute *int, start *time.Time) bool {
 	for {
 		chanOpen := getTaskResultMess(chanResultTaskEnd, endTasks)
 		if !chanOpen {
-			logs.Error(errors.New("Один из двух каналов результатов задач преждевременно закрылся."))
+			logs.Error(errors.New("Канал результатов задач chanResultTaskEnd преждевременно закрылся."))
 			break
 		}
 
@@ -116,10 +108,10 @@ func calcExecTask(chanResultTaskEnd chan string, beginTasks, endTasks, tasksInMi
 		if diff < 0 { //когда задачи выполняются медленно
 			*tasksInMinute = 0
 		} else if *tasksInMinute == config["maxTaskInMinute"] { //когда задачи выполняются быстро
-				*tasksInMinute = 0
-				fmt.Println("Wait " + strconv.FormatFloat(diff.Seconds(), 'f', 2, 64) + " seconds...")
-				time.Sleep(diff)
-				*start = time.Now()
+			*tasksInMinute = 0
+			fmt.Println("Wait " + strconv.FormatFloat(diff.Seconds(), 'f', 2, 64) + " seconds...")
+			time.Sleep(diff)
+			*start = time.Now()
 		}
 
 		if *beginTasks-*endTasks < config["maxSimultaneouslyTask"] {
